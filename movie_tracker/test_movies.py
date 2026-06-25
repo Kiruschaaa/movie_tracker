@@ -24,6 +24,12 @@ class TestInitDb:
         conn.close()
         assert any(t[0] == "movies" for t in tables)
 
+    def test_init_idempotent(self, db):
+        # Повторный вызов не ломает базу
+        init_db(db)
+        init_db(db)
+        assert get_all_movies(db) == []
+
 
 # ── Добавление ───────────────────────────────────────────────────
 class TestAddMovie:
@@ -37,6 +43,17 @@ class TestAddMovie:
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
         add_movie("Интерстеллар", 2014, 8.6, "фантастика", db)
         assert len(get_all_movies(db)) == 2
+
+    def test_stored_fields_correct(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        m = get_all_movies(db)[0]
+        assert m["year"] == 1999
+        assert m["rating"] == 8.7
+        assert m["genre"] == "фантастика"
+
+    def test_title_stripped(self, db):
+        add_movie("  Матрица  ", 1999, 8.7, "фантастика", db)
+        assert get_all_movies(db)[0]["title"] == "Матрица"
 
     def test_empty_title_raises(self, db):
         with pytest.raises(ValueError, match="Название"):
@@ -54,6 +71,10 @@ class TestAddMovie:
         with pytest.raises(ValueError, match="Год"):
             add_movie("Фильм", "abc", 7.0, "драма", db)
 
+    def test_year_none_raises(self, db):
+        with pytest.raises(ValueError, match="Год"):
+            add_movie("Фильм", None, 7.0, "драма", db)
+
     def test_year_too_old_raises(self, db):
         with pytest.raises(ValueError, match="Некорректный год"):
             add_movie("Фильм", 1800, 7.0, "драма", db)
@@ -62,9 +83,17 @@ class TestAddMovie:
         with pytest.raises(ValueError, match="Некорректный год"):
             add_movie("Фильм", 2200, 7.0, "драма", db)
 
+    def test_year_boundary_min(self, db):
+        add_movie("Первый фильм", 1888, 5.0, "документальный", db)
+        assert get_all_movies(db)[0]["year"] == 1888
+
     def test_invalid_rating_string_raises(self, db):
         with pytest.raises(ValueError, match="Рейтинг"):
             add_movie("Фильм", 2000, "хорошо", "драма", db)
+
+    def test_rating_none_raises(self, db):
+        with pytest.raises(ValueError, match="Рейтинг"):
+            add_movie("Фильм", 2000, None, "драма", db)
 
     def test_rating_below_zero_raises(self, db):
         with pytest.raises(ValueError, match="Рейтинг должен быть от 0 до 10"):
@@ -97,6 +126,13 @@ class TestGetMovies:
     def test_get_by_id_not_found(self, db):
         assert get_movie_by_id(999, db) is None
 
+    def test_movies_ordered_by_id(self, db):
+        add_movie("Б", 2000, 7.0, "драма", db)
+        add_movie("А", 1999, 8.0, "комедия", db)
+        movies = get_all_movies(db)
+        assert movies[0]["title"] == "Б"
+        assert movies[1]["title"] == "А"
+
 
 # ── Обновление ───────────────────────────────────────────────────
 class TestUpdateMovie:
@@ -105,10 +141,28 @@ class TestUpdateMovie:
         update_movie(1, title="Матрица: Перезагрузка", db_path=db)
         assert get_movie_by_id(1, db)["title"] == "Матрица: Перезагрузка"
 
+    def test_update_year(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        update_movie(1, year=2003, db_path=db)
+        assert get_movie_by_id(1, db)["year"] == 2003
+
     def test_update_rating(self, db):
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
         update_movie(1, rating=9.0, db_path=db)
         assert get_movie_by_id(1, db)["rating"] == 9.0
+
+    def test_update_genre(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        update_movie(1, genre="боевик", db_path=db)
+        assert get_movie_by_id(1, db)["genre"] == "боевик"
+
+    def test_update_only_one_field_rest_unchanged(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        update_movie(1, title="Новое", db_path=db)
+        m = get_movie_by_id(1, db)
+        assert m["year"] == 1999
+        assert m["rating"] == 8.7
+        assert m["genre"] == "фантастика"
 
     def test_update_nonexistent_raises(self, db):
         with pytest.raises(ValueError, match="не найден"):
@@ -119,10 +173,36 @@ class TestUpdateMovie:
         with pytest.raises(ValueError, match="Название"):
             update_movie(1, title="", db_path=db)
 
+    def test_update_with_empty_genre_raises(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        with pytest.raises(ValueError, match="Жанр"):
+            update_movie(1, genre="", db_path=db)
+
+    def test_update_with_bad_year_string_raises(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        with pytest.raises(ValueError, match="Год"):
+            update_movie(1, year="abc", db_path=db)
+
+    def test_update_with_bad_year_range_raises(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        with pytest.raises(ValueError, match="Некорректный год"):
+            update_movie(1, year=1700, db_path=db)
+
+    def test_update_with_bad_rating_string_raises(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        with pytest.raises(ValueError, match="Рейтинг"):
+            update_movie(1, rating="хорошо", db_path=db)
+
     def test_update_with_bad_rating_raises(self, db):
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
         with pytest.raises(ValueError, match="Рейтинг"):
             update_movie(1, rating=15, db_path=db)
+
+    def test_update_no_args_does_nothing(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        update_movie(1, db_path=db)
+        m = get_movie_by_id(1, db)
+        assert m["title"] == "Матрица"
 
 
 # ── Удаление ─────────────────────────────────────────────────────
@@ -145,7 +225,7 @@ class TestDeleteMovie:
         assert movies[0]["title"] == "Интерстеллар"
 
 
-# ── Фильтрация ───────────────────────────────────────────────────
+# ── Фильтрация по жанру ──────────────────────────────────────────
 class TestFilterByGenre:
     def test_filter_returns_correct(self, db):
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
@@ -155,15 +235,36 @@ class TestFilterByGenre:
         assert result[0]["title"] == "Матрица"
 
     def test_filter_case_insensitive(self, db):
+        # Баг #3: SQLite LOWER() не работает с кириллицей — фиксим в Python
         add_movie("Матрица", 1999, 8.7, "Фантастика", db)
         result = filter_by_genre("фантастика", db)
+        assert len(result) == 1
+
+    def test_filter_case_insensitive_upper(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        result = filter_by_genre("ФАНТАСТИКА", db)
         assert len(result) == 1
 
     def test_filter_no_match_returns_empty(self, db):
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
         assert filter_by_genre("комедия", db) == []
 
+    def test_filter_genre_stripped(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        result = filter_by_genre("  фантастика  ", db)
+        assert len(result) == 1
 
+    def test_filter_multiple_same_genre(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        add_movie("Интерстеллар", 2014, 8.6, "фантастика", db)
+        result = filter_by_genre("фантастика", db)
+        assert len(result) == 2
+
+    def test_filter_empty_db(self, db):
+        assert filter_by_genre("фантастика", db) == []
+
+
+# ── Фильтрация по году ───────────────────────────────────────────
 class TestFilterByYear:
     def test_filter_returns_correct(self, db):
         add_movie("Матрица", 1999, 8.7, "фантастика", db)
@@ -185,3 +286,11 @@ class TestFilterByYear:
         add_movie("Бойцовский клуб", 1999, 8.8, "драма", db)
         result = filter_by_year(1999, db)
         assert len(result) == 2
+
+    def test_filter_year_as_string_int(self, db):
+        add_movie("Матрица", 1999, 8.7, "фантастика", db)
+        result = filter_by_year("1999", db)
+        assert len(result) == 1
+
+    def test_filter_empty_db(self, db):
+        assert filter_by_year(1999, db) == []
